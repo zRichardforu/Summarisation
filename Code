@@ -1,0 +1,66 @@
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import vk_api
+import torch
+
+def fetch_messages(group_id, vk_session):
+    messages = []
+    offset = 0
+    while True:
+        response = vk_session.method(
+            "messages.getConversationsMembers",
+            peer_id=int(f"-(group_id)"),
+            fields="nickname",
+            offset=offset,
+            count=186,
+        )
+        messages.extend(response["items"])
+        if len(response["items"]) < 100:
+            break
+        offset += 100
+    return messages
+
+def preprocess_messages(messages):
+    texts = []
+    for message in messages:
+        user_id = message["member_id"]
+        text = message["nickname"] + ": " + message["text"]
+        texts.append(text)
+    return texts
+
+def generate_summary(model, tokenizer, texts, max_length=512):
+    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+
+    max_length = min(max_length, input_ids.shape[1])
+
+    start_token = tokenizer.cls_token_id
+    end_token = tokenizer.sep_token_id
+
+    input_ids = torch.cat([torch.full_like(input_ids[:, :1], start_token), input_ids], dim=1)
+    input_ids = input_ids[:, :max_length]
+    attention_mask = attention_mask[:, :max_length]
+
+    summary_ids = model.generate(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        max_length=max_length,
+        num_beams=5,
+        early_stopping=True,
+    )
+
+    summary = tokenizer.decode(summary_ids[0])
+    summary = summary.replace(tokenizer.cls_token, "").replace(tokenizer.sep_token, "")
+    return summary
+
+vk_session = vk_api.VkApi(token="your_access_token")
+group_id = "your_group_id"
+
+messages = fetch_messages(group_id, vk_session)
+texts = preprocess_messages(messages)
+
+tokenizer = AutoTokenizer.from_pretrained("t5-base")
+model = AutoModelForSeq2SeqLM.from_pretrained("t5-base")
+
+summary = generate_summary(model, tokenizer, texts)
+print(summary)
